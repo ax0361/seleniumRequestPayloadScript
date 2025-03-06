@@ -130,3 +130,5 @@ dist
 .pnp.*
 
 requests.json
+requests.csv
+requirement.json
