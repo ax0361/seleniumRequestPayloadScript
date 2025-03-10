@@ -80,7 +80,7 @@ async function getData() {
       return caputureNetworkRequests(u, port)
     })
 
-    console.log(`Starting to capture network requests for batch ${++batchNo}`)
+    console.log(`Starting to capture network requests for batch -> ${++batchNo}`)
 
     const batchData = await Promise.all(promises);
     data = [...data, ...batchData]
