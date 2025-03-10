@@ -3,66 +3,50 @@ const edge = require('selenium-webdriver/edge');
 const CDP = require('chrome-remote-interface');
 const { writeFileSync, appendFileSync, readFileSync } = require('fs');
 const { parseAsync } = require('json2csv');
+const extractURLs = require('./helpers/getHrefLinks');
+const flattenObject = require('./helpers/flattenObject');
 
 
-async function caputureNetworkRequests(url,port) {
+async function caputureNetworkRequests(url, port) {
   const options = new edge.Options();
   options.addArguments('--headless')
-  options.addArguments(`--remote-debugging-port=${port}`); 
+  options.addArguments(`--remote-debugging-port=${port}`);
+
 
   const driver = await new Builder()
     .forBrowser('MicrosoftEdge')
     .setEdgeOptions(options)
-    .build();
+    .build()
 
+  const cdpClient = await CDP({ port });
   try {
-    const cdpClient = await CDP({ port });
+    console.log(`Capturing network requests for url : ${url}`)
     await cdpClient.Network.enable();
 
     const requests = [];
     cdpClient.Network.requestWillBeSent((params) => {
-      if(params?.request?.url?.includes("interact")){
-        const data = JSON.parse(params.request.postData)?.events[0].xdm
-        requests.push(flattenObject({url,...data}))
+      if (params?.request?.url?.includes("https://edge.adobedc.net/")) {
+        try {
+          const data = JSON.parse(params.request.postData)?.events[0]?.xdm
+          requests.push(flattenObject({ url, ...data }))
+        } catch (error) {
+          console.error(`error in parsing json for url - ${url} -> `, error)
+          requests.push({ url, error: 'error in parsing json' })
+        }
       }
     });
 
     await driver.get(url);
-    await new Promise((resolve) => setTimeout(resolve, 5000));
-    await cdpClient.close();
-
     return requests
   } catch (err) {
-    console.error('Error:', err);
+    console.error(`Error for url : ${url} - `, err);
   } finally {
+    await cdpClient.close();
+    await driver.close()
     await driver.quit();
   }
 }
- 
-function flattenObject(object){
-  const result = {}
-  for (const key in object){
-    if(typeof object[key] === 'object'){
-      const flatObject = flattenObject(object[key])
-      for (const flatKey in flatObject){
-        result[`${key}.${flatKey}`] = flatObject[flatKey]
-      }
-    } else {
-      result[key] = object[key]
-    }
-  }
-  return result
-}
 
-async function extractURLs(url){
-  const driver = await new Builder().forBrowser('MicrosoftEdge').build();
-  driver.get(url)
-  const links = await driver.findElements({tagName: 'a'})
-  const urls = await Promise.all(links.map(async (link) => {
-    return await link.getAttribute('href')
-  }))
-  return urls
-}
 
 async function getData() {
   let urls = []
@@ -73,7 +57,7 @@ async function getData() {
   });
 
   const extendedURLs = []
-  for (const url of urls){
+  for (const url of urls) {
     const links = await extractURLs(url)
     extendedURLs.push(...links)
   }
@@ -81,17 +65,35 @@ async function getData() {
 
 
   urls = [...urls, ...extendedURLs]
-
-  console.log(urls)
+  urls = new Set(urls)
+  urls = [...urls]
+  // urls = urls.splice(0, 100)
   console.log(urls.length)
-  const promises = urls.map((u, i) => {
-    const port = 9222 + i;
-    return caputureNetworkRequests(u, port)
-  })
+  let batchNo = 0
+  let data = []
 
-  console.log("Starting to capture network requests")
+  //concurrent
+  while (urls.length) {
+    const batch = urls.splice(0, 6)
+    const promises = batch.map((u, i) => {
+      const port = 9222 + i;
+      return caputureNetworkRequests(u, port)
+    })
 
-  const data = await Promise.all(promises);
+    console.log(`Starting to capture network requests for batch ${++batchNo}`)
+
+    const batchData = await Promise.all(promises);
+    data = [...data, ...batchData]
+  }
+
+  //sequential
+  // for (const url of urls) {
+  //   const port = 9222;
+  //   const requests = await caputureNetworkRequests(url, port)
+  //   data.push(requests)
+  // }
+
+  console.log('Writing data to CSV')
 
   let payloads = [];
   data.forEach((reqs) => {
@@ -99,9 +101,9 @@ async function getData() {
       payloads = [...payloads, ...reqs];
     }
   });
-
+  writeFileSync('requests.json', JSON.stringify(payloads, null, 2), 'utf-8');
   const csv = await parseAsync(payloads)
-  writeFileSync('requests.csv',csv, 'utf-8')
+  writeFileSync('requests.csv', csv, 'utf-8')
 }
 
 getData()
