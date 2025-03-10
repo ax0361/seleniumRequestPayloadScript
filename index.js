@@ -5,10 +5,10 @@ const { writeFileSync, appendFileSync, readFileSync } = require('fs');
 const { parseAsync } = require('json2csv');
 
 
-async function caputureNetworkRequests(url) {
+async function caputureNetworkRequests(url,port) {
   const options = new edge.Options();
-  // options.addArguments('--headless')
-  options.addArguments('--remote-debugging-port=9222'); 
+  options.addArguments('--headless')
+  options.addArguments(`--remote-debugging-port=${port}`); 
 
   const driver = await new Builder()
     .forBrowser('MicrosoftEdge')
@@ -16,7 +16,7 @@ async function caputureNetworkRequests(url) {
     .build();
 
   try {
-    const cdpClient = await CDP({ port: 9222 });
+    const cdpClient = await CDP({ port });
     await cdpClient.Network.enable();
 
     const requests = [];
@@ -38,26 +38,6 @@ async function caputureNetworkRequests(url) {
     await driver.quit();
   }
 }
-
-async function getData() {
-  const requests = [];
-  const urls = []
-  readFileSync('urls.txt', 'utf-8').split('\n').forEach((url) => {
-    if (url) {
-      urls.push(url);
-    }
-  });
-  let payloads = []
-  for (const url of urls){
-    const reqs = await caputureNetworkRequests(url)
-    if(Array.isArray(reqs) && reqs.length){
-      payloads = [...payloads,...reqs]
-    }
-  } 
-
-  const csv = await parseAsync(payloads)
-  writeFileSync('requests.csv',csv, 'utf-8')
-}
  
 function flattenObject(object){
   const result = {}
@@ -72,6 +52,56 @@ function flattenObject(object){
     }
   }
   return result
+}
+
+async function extractURLs(url){
+  const driver = await new Builder().forBrowser('MicrosoftEdge').build();
+  driver.get(url)
+  const links = await driver.findElements({tagName: 'a'})
+  const urls = await Promise.all(links.map(async (link) => {
+    return await link.getAttribute('href')
+  }))
+  return urls
+}
+
+async function getData() {
+  let urls = []
+  readFileSync('urls.txt', 'utf-8').split('\n').forEach((url) => {
+    if (url) {
+      urls.push(url);
+    }
+  });
+
+  const extendedURLs = []
+  for (const url of urls){
+    const links = await extractURLs(url)
+    extendedURLs.push(...links)
+  }
+
+
+
+  urls = [...urls, ...extendedURLs]
+
+  console.log(urls)
+  console.log(urls.length)
+  const promises = urls.map((u, i) => {
+    const port = 9222 + i;
+    return caputureNetworkRequests(u, port)
+  })
+
+  console.log("Starting to capture network requests")
+
+  const data = await Promise.all(promises);
+
+  let payloads = [];
+  data.forEach((reqs) => {
+    if (Array.isArray(reqs) && reqs.length) {
+      payloads = [...payloads, ...reqs];
+    }
+  });
+
+  const csv = await parseAsync(payloads)
+  writeFileSync('requests.csv',csv, 'utf-8')
 }
 
 getData()
