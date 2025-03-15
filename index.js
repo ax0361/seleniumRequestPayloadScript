@@ -1,11 +1,10 @@
 const { Builder, Key, By, until } = require('selenium-webdriver');
 const edge = require('selenium-webdriver/edge');
 const CDP = require('chrome-remote-interface');
-const { writeFileSync, appendFileSync, readFileSync } = require('fs');
+const { writeFileSync, appendFileSync, readFileSync, readSync } = require('fs');
 const { parseAsync } = require('json2csv');
 const extractURLs = require('./helpers/getHrefLinks');
 const flattenObject = require('./helpers/flattenObject');
-const { resolve } = require('path');
 
 
 async function caputureNetworkRequests(url, port) {
@@ -22,6 +21,8 @@ async function caputureNetworkRequests(url, port) {
   await driver.manage().window().maximize();
   await driver.executeScript('document.body.style.zoom="25%"');
 
+
+
   const cdpClient = await CDP({ port });
   try {
     console.log(`Capturing network requests for url : ${url}`)
@@ -31,12 +32,13 @@ async function caputureNetworkRequests(url, port) {
 
 
 
-    cdpClient.Network.requestWillBeSent((params) => {
+    cdpClient.Network.requestWillBeSent(async (params) => {
       if (params?.request?.url?.includes("https://edge.adobedc.net/")) {
         console.log("request : ", params.request.url)
         try {
-          const data = params
-          requests.push({ url, data })
+          const data = await cdpClient.Network.getRequestPostData({ requestId: params.requestId })
+          const postData = JSON.parse(data?.postData)
+          requests.push({ url: params.request.url, data: postData.events[0]?.xdm })
         } catch (error) {
           console.error(`error in parsing json for url - ${url} - request url - ${params.request.url} -> `, error)
           requests.push({ url, error: 'error in parsing json' })
@@ -44,30 +46,43 @@ async function caputureNetworkRequests(url, port) {
       }
     });
 
-    cdpClient.Network.loadingFinished((params) => {
-      if (params?.request?.url?.includes("https://edge.adobedc.net/")) {
-        const data = params
-        requests.push({ url, data })
-      }
-  });
 
-  cdpClient.Network.responseReceived((params) => {
-    if (params?.request?.url?.includes("https://edge.adobedc.net/")) {
-      const data = params
-      requests.push({ url, data })
-    }
-  });
 
     await driver.get(url);
-    const link = await driver.wait(until.elementLocated(By.className('anchor4-button-link att-track btn-primary')), 10000);
+    await driver.executeScript('window.open = null')
+    const originalTab = await driver.getWindowHandle();
 
-    await driver.executeScript("arguments[0].scrollIntoView(true);", link);
-    await new Promise(resolve => setTimeout(resolve, 1000));
+    let links = (await driver.findElements({ tagName: "a" })).splice(0, 10);
+    console.log("Links length => ", links.length)
+    while (links.length) {
+      const batch = links.splice(0, 6)
+      await Promise.all(batch.map(async (link) => {
+        try {
+          await driver.executeScript(`arguments[0].setAttribute('target', '_blank');`, link)
+          await link.click();
+        } catch (error) {
+          const l = await link.getAttribute("href")
+          console.log(`error in clicking the link -> ${l} -> `, error)
+        }
+      }))
 
-    await driver.executeScript(`
-        arguments[0].setAttribute('target', '_blank');
-      `,link)
-    await link.click();
+
+      const tabs = await driver.getAllWindowHandles();
+      for (const tab of tabs) {
+        if (tab !== originalTab) {
+          try {
+            await driver.switchTo().window(tab);
+            await driver.close();
+          } catch (error) {
+            console.error(`error in closing tab -> ${tab} -> `, error)
+          }
+        }
+      }
+    }
+
+
+
+
     await new Promise((resolve) => setTimeout(resolve, 30000));
 
     return requests
